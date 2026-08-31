@@ -11,8 +11,10 @@
 
 
 import unittest
+from unittest.mock import Mock, patch
 
 from pssh.clients.native.single import SSHClient
+from pssh.exceptions import SFTPError
 from pssh.output import HostOutput
 
 
@@ -40,6 +42,54 @@ class Channel:
 
 
 class NativeSingleClientTest(unittest.TestCase):
+
+    def test_make_sftp_client_returns_channel_and_wraps_errors(self):
+        client = object.__new__(SSHClient)
+        sftp = object()
+        client._make_sftp_eagain = lambda: sftp
+
+        self.assertIs(client.make_sftp_client(), sftp)
+
+        error = RuntimeError('sftp init failed')
+
+        def raise_error():
+            raise error
+
+        client._make_sftp_eagain = raise_error
+
+        with self.assertRaises(SFTPError) as raised:
+            client.make_sftp_client()
+
+        self.assertIs(raised.exception.args[0], error)
+
+    def test_transfer_helpers_create_sftp_client(self):
+        client = Mock(spec=SSHClient)
+        client.host = 'host'
+        sftp = Mock()
+        client.make_sftp_client.return_value = sftp
+        client._remote_paths_split.return_value = None
+        client._sftp_openfh.side_effect = SFTPError
+        client._scp_recv_recursive.return_value = 'received'
+        client._scp_send_dir.return_value = 'sent'
+        client.eagain.side_effect = lambda func, *args: func(*args)
+
+        with patch('pssh.clients.native.single.os.path.isdir') as isdir:
+            isdir.return_value = False
+            SSHClient.copy_file(client, 'local', 'remote')
+            SSHClient.copy_remote_file(client, 'remote', 'local')
+            self.assertEqual(
+                SSHClient.scp_recv(
+                    client, 'remote', 'local', recurse=True), 'received')
+            isdir.return_value = True
+            self.assertEqual(
+                SSHClient.scp_send(
+                    client, 'local', 'remote', recurse=True), 'sent')
+            isdir.return_value = False
+            client._remote_paths_split.return_value = '/remote'
+            SSHClient.scp_send(
+                client, 'local', 'remote/file', recurse=True)
+
+        self.assertEqual(client.make_sftp_client.call_count, 5)
 
     def test_wait_finished_waits_for_close_before_exit_status(self):
         client = object.__new__(SSHClient)
