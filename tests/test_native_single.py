@@ -11,10 +11,10 @@
 
 
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 from pssh.clients.native.single import SSHClient
-from pssh.exceptions import SFTPError
+from pssh.exceptions import SCPError, SFTPError
 from pssh.output import HostOutput
 
 
@@ -42,6 +42,45 @@ class Channel:
 
 
 class NativeSingleClientTest(unittest.TestCase):
+
+    @patch('pssh.clients.native.single.FileObjectThread')
+    def test_scp_recv_rejects_unexpected_eof(self, file_object):
+        client = object.__new__(SSHClient)
+        client.host = '127.0.0.1'
+        client.session = Mock()
+        client.poll = Mock()
+        channel = Mock()
+        channel.read.return_value = (0, b'')
+        fileinfo = Mock(st_size=4)
+        client.session.scp_recv2.return_value = (channel, fileinfo)
+
+        with self.assertRaises(SCPError):
+            client._scp_recv('remote', 'local')
+
+        channel.read.assert_called_once_with(size=4)
+        client.poll.assert_not_called()
+        file_object.return_value.write.assert_not_called()
+        file_object.return_value.flush.assert_called_once_with()
+        file_object.return_value.close.assert_called_once_with()
+        channel.close.assert_called_once_with()
+
+    @patch('pssh.clients.native.single.FileObjectThread')
+    def test_scp_recv_limits_read_size_to_buffer(self, file_object):
+        client = object.__new__(SSHClient)
+        client._BUF_SIZE = 3
+        client.session = Mock()
+        client.poll = Mock()
+        channel = Mock()
+        channel.read.side_effect = [(3, b'one'), (1, b'!')]
+        fileinfo = Mock(st_size=4)
+        client.session.scp_recv2.return_value = (channel, fileinfo)
+
+        client._scp_recv('remote', 'local')
+
+        self.assertEqual(channel.read.call_args_list,
+                         [call(size=3), call(size=1)])
+        client.poll.assert_not_called()
+        file_object.return_value.write.assert_has_calls([call(b'one'), call(b'!')])
 
     def test_make_sftp_client_returns_channel_and_wraps_errors(self):
         client = object.__new__(SSHClient)
